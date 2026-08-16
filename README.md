@@ -1,156 +1,312 @@
 # KiemTheDeployForge
 
-Ứng dụng Windows độc lập để đóng gói và cài đặt bộ Kiem The Server hoàn toàn ngoại tuyến.
+Bộ công cụ Windows đóng gói và cài đặt server Kiếm Thế **hoàn toàn ngoại tuyến**.
+
+Máy đóng gói chạy **Builder** để gom Client, Server, Bot, MySQL 5.5.15 và `jxaccount.sql` thành đúng hai file phát hành: `Setup.exe` và `KiemTheServer-Offline.iso`. Máy đích chỉ cần hai file đó — không cần Internet, không cần cài sẵn gì.
+
+*Developed by CuongNH — a gift to the Hội Quán Võ Lâm brotherhood.*
+
+---
+
+## Mục lục
+
+- [Luồng sử dụng](#luồng-sử-dụng)
+- [Builder — đóng gói](#builder--đóng-gói)
+- [Setup — cài đặt](#setup--cài-đặt)
+- [MySQL và tài khoản](#mysql-và-tài-khoản)
+- [Dung lượng ổ đĩa](#dung-lượng-ổ-đĩa)
+- [Build từ mã nguồn](#build-từ-mã-nguồn)
+- [Cấu trúc mã nguồn](#cấu-trúc-mã-nguồn)
+- [Thiết kế đáng lưu ý](#thiết-kế-đáng-lưu-ý)
+- [Trước khi phát hành thật](#trước-khi-phát-hành-thật)
+
+---
 
 ## Luồng sử dụng
 
-1. Build công cụ: chạy `Build.bat` (chỉ cần cài Go, không cần MinGW/windres). Dùng `Build.bat check` nếu muốn chạy thêm gofmt, `go vet` và `go test`.
-2. Chạy `dist\KiemTheDeployForge-Builder.exe`.
-3. Chọn thư mục `Client`, thư mục `Server`, một file `jxaccount.sql` và thư mục xuất bản. **Thư mục `Bot` là tuỳ chọn** — để trống nếu không muốn đóng gói bot.
-   Trong mục **Cấu hình mở rộng**, nút *Tài khoản MySQL…* cho phép đổi mật khẩu `root`, tên user bot và mật khẩu bot. Bỏ qua thì dùng mặc định `root`/`1234` và `bot_writer`/`1234`.
-4. Builder tạo đúng hai artifact phát hành: `Setup.exe` và `KiemTheServer-Offline.iso`. Mọi giai đoạn đều báo phần trăm, kể cả lúc ghi ISO (0–90%) và verify ISO (92–100%).
-5. Giữ `Setup.exe` cạnh `KiemTheServer-Offline.iso`, rồi chạy `Setup.exe` bằng quyền Administrator trên máy đích. Thư mục mặc định là `C:\KiemTheServer`.
+```
+┌─ Máy đóng gói ────────────────┐        ┌─ Máy đích ──────────────────┐
+│                               │        │                             │
+│  Client\                      │        │  Setup.exe  (Administrator) │
+│  Server\        ──► Builder ──┼───────►│         │                   │
+│  Bot\ (tuỳ chọn)              │  ISO   │         ▼                   │
+│  jxaccount.sql                │        │  Client\  Server\  Bot\     │
+│                               │        │  MySQL + jxaccount          │
+│  ► Setup.exe                  │        │  2 shortcut ngoài Desktop   │
+│  ► KiemTheServer-Offline.iso  │        │                             │
+└───────────────────────────────┘        └─────────────────────────────┘
+```
 
-Setup tạo `Client`, `Server` và — nếu bản phát hành có đóng gói bot — `Bot`; sau đó tạo hai shortcut ngoài Desktop dùng chung (`Kiem The.lnk` trỏ `Client\Game.exe`, `Kiem The AutoPk.lnk` trỏ `Client\AutoPk\wjxtdAutoPro.exe`).
+1. Build công cụ: chạy **`Build.bat`** (chỉ cần cài Go).
+2. Chạy `dist\KiemTheDeployForge-Builder.exe`, chọn các thư mục nguồn, bấm **TẠO SETUP + ISO**.
+3. Chép **cả hai** file `Setup.exe` và `KiemTheServer-Offline.iso` sang máy đích, đặt **cạnh nhau**.
+4. Chạy `Setup.exe` bằng quyền Administrator, chọn thư mục cài đặt, bấm **CÀI ĐẶT**.
+5. Vào thư mục `Server` đã cài, chạy file `.bat` khởi động server theo cách bạn vẫn làm.
 
-## Giao diện tiến độ
+---
 
-Cả hai cửa sổ dùng chung bộ widget trong `src\internal\guiutil`:
+## Builder — đóng gói
 
-- **Phần trăm nằm bên trong thanh tiến trình** (`guiutil.Meter`, `CustomWidget` vẽ tay ở chế độ `PaintBuffered`). Trước đây phần trăm là một `Label` riêng cạnh `ProgressBar`; độ rộng label đổi theo từng giá trị nên layout bị tính lại liên tục, cộng với repaint không double-buffer, gây nháy.
-- **Tên stage và tên file nằm ở hai dòng riêng, mỗi dòng chiếm trọn chiều ngang.** Trước đây cả hai bị ghép vào một `Label` dùng chung `HBox` với label phần trăm, nên tên file dài ngắn khác nhau làm cả dải nhấp nháy. Dòng tên file dùng `EllipsisPath` để đường dẫn dài bị cắt bớt thay vì làm giãn layout.
-- **Khung log cuộn kiểu terminal** (`guiutil.Console`): nền tối, chữ monospace, chỉ ghi thêm dòng mới, giữ tối đa 4000 dòng scrollback.
-- **`guiutil.Relay` tiết chế tần suất cập nhật xuống tối đa một lần mỗi 90 ms.** Pipeline đóng gói báo tiến độ mỗi block I/O — hàng nghìn lần mỗi giây trên payload lớn — và chính luồng báo đó làm cửa sổ nháy. Relay gộp chúng lại nhưng không bao giờ bỏ lỡ một lần đổi stage hay báo cáo cuối cùng.
+### Đầu vào
 
-Builder và Setup đều nhúng application manifest khai báo Common-Controls 6.0. Thiếu manifest thì `walk` gửi `TTM_ADDTOOL` theo layout comctl32 v6 trong khi Windows nạp comctl32 v5, và cả hai GUI panic trước khi hiện cửa sổ. `scripts\Build-Tools.ps1` sinh lại `rsrc_windows_amd64.syso` từ `Builder.manifest` / `Setup.manifest` bằng `cmd\genrsrc` (Go thuần) ở mỗi lần build.
+| Trường | Bắt buộc | Ghi chú |
+|---|:---:|---|
+| Thư mục **Client** | ✔ | Phải có `Game.exe`, `AutoPk\wjxtdAutoPro.exe`, `user\uicommon.ini`, `user\serverlistdebug.ini`, `AutoPk\serverlist.ini` |
+| Thư mục **Server** | ✔ | Phải có `Gameserver\GS1..GS9.exe` và `GS1..GS9servercfg.ini` |
+| Thư mục **Bot** | — | **Tuỳ chọn.** Nếu chọn thì phải có `loginprobe.exe` và `loginprobe.env` ở gốc |
+| File **jxaccount.sql** | ✔ | Bắt buộc đúng tên, phải có `CREATE TABLE` cho bảng `account` |
+| Thư mục **xuất bản** | ✔ | Ổ NTFS, cần khoảng 2,2 lần payload + 2 GiB |
 
-Thư mục `Server` không bắt buộc phải có `start-all.bat` hay `stop-all.bat`. Việc bật/tắt server là do người vận hành tự mở thư mục `Server` đã cài và chạy file `.bat` có sẵn ở đó.
+Server **không** bắt buộc có `start-all.bat` hay `stop-all.bat`. Bật/tắt server là việc của người vận hành, Builder không can thiệp.
 
-Builder và Setup đều được build `windows/amd64` (PE machine `0x8664`). Chuỗi `win32` trong manifest chỉ mô tả gói MySQL 5.5.15 legacy chạy thành service DB riêng; nó không phải kiến trúc của Builder, Setup hay GameServer.
+`jxaccount.sql` phải nằm **ngoài** cả ba cây Client/Server/Bot. Builder từ chối input lồng nhau trước khi quét, để không đóng gói trùng byte hoặc làm đầy ổ đĩa ngoài ý muốn. Các đường dẫn được chuẩn hoá qua junction/symlink trước khi kiểm tra, nên hai alias trỏ cùng một cây cũng bị từ chối.
 
-`Setup.exe` là bootstrap nhỏ, runnable, chỉ mang manifest dùng để khóa đúng release. Dữ liệu lớn nằm trong `Payload.ktpkg` trên ISO UDF. Khi chạy file Setup bên ngoài, nó tự tìm và mount đúng ISO cùng thư mục; khi chạy bản Setup nằm trong ISO đã mount, nó đọc payload trực tiếp. Setup tự dismount ISO do chính nó mount sau khi plan/cài đặt kết thúc.
+File SQL bị từ chối nếu chứa `CREATE USER`, `GRANT`, `USE`, `LOAD DATA` hay các lệnh ngoài phạm vi tạo bảng — tài khoản MySQL do Setup tự tạo, không lấy từ file SQL.
 
-File database đầu vào bắt buộc có tên `jxaccount.sql`, phải chứa `CREATE TABLE` cho bảng `account` (kèm cột `loginName` và `password_hash`) và phải nằm ngoài cả ba cây Client, Server và Bot. Builder từ chối input lồng nhau trước khi quét để không đóng gói trùng byte hoặc làm đầy ổ đĩa ngoài ý muốn. File SQL cũng bị từ chối nếu chứa `CREATE USER`, `GRANT`, `USE`, `LOAD DATA` hay các câu lệnh ngoài phạm vi tạo bảng — tài khoản MySQL do Setup tự tạo, không lấy từ file SQL.
+### Cấu hình mở rộng
 
-Thư mục Bot là tuỳ chọn; nếu có chọn thì bắt buộc phải có `loginprobe.exe` và `loginprobe.env` ngay ở gốc.
+Nút **Tài khoản MySQL…** cho phép đổi mật khẩu `root`, tên user bot và mật khẩu bot. Giá trị được ghi vào manifest của bản phát hành. Bỏ qua thì dùng mặc định.
 
-## Dung lượng ổ đĩa
+### Đầu ra
 
-Setup kiểm tra hai ổ tách biệt và hiển thị cả hai ngay trên giao diện trước khi cài:
+Đúng hai file trong thư mục xuất bản:
 
-- Ổ chứa thư mục cài đặt: phải đủ chỗ cho payload, phần mở rộng MySQL và import SQL. Thiếu chỗ là lỗi chặn, không cho cài.
-- Ổ hệ thống Windows (thường là `C:`): bot cần tối thiểu 20 GiB trống dù cài ở ổ nào. Thiếu chỗ chỉ là cảnh báo — Setup vẫn cho cài và ghi lại cảnh báo vào `install-state.json`.
+- `Setup.exe` — bootstrap nhỏ, chỉ mang manifest để khoá đúng bản phát hành.
+- `KiemTheServer-Offline.iso` — UDF, gồm đúng bốn mục ở gốc: `Setup.exe`, `Payload.ktpkg`, `README.txt`, `manifests\`.
 
-Con số dung lượng được đọc lại theo đúng thư mục người dùng chọn, kể cả khi họ đổi thư mục sau bước preflight.
+Dữ liệu lớn nằm trong `Payload.ktpkg` (ZIP64 Store) trên ISO, **không** nhúng vào PE: executable lớn hơn 4 GB không được Windows `CreateProcess` nạp ổn định.
 
-Thư mục xuất bản là trường bắt buộc; Builder không dùng ngầm thư mục làm việc hiện tại khi ô này trống. Các đường dẫn nguồn được chuẩn hóa qua junction/symlink trước khi kiểm tra overlap, nên hai alias trỏ vào cùng một cây cũng bị từ chối.
+Mọi giai đoạn đều báo phần trăm, kể cả lúc ghi ISO (0–90 %) và verify ISO (92–100 %).
 
-ISO có đúng bốn mục ở root: `Setup.exe`, `Payload.ktpkg`, `README.txt` và `manifests`. Không nhúng payload 9 GB vào PE vì executable lớn hơn 4 GB không thể được Windows `CreateProcess` nạp ổn định.
+### Chế độ CLI
 
-Toàn máy chỉ cho phép một build đóng gói nặng chạy tại một thời điểm, kể cả khi các tiến trình chọn những thư mục output khác nhau. Builder ghi marker giao dịch trước khi tạo output cuối; nếu tiến trình bị hard-kill hoặc mất điện giữa lúc đã đổi tên `Payload.ktpkg`, `Setup.exe`, `README.txt` hay ISO sang tên chính thức, lần build kế tiếp chỉ thu hồi bốn file đó khi marker chứng minh đúng output. Sau khi giữ mutex toàn máy, Builder cũng dọn ngay các tên tạm riêng của Forge và yêu cầu marker sở hữu đối với thư mục (`.Payload.ktpkg-*.building`, ISO `.building.iso`, `.iso-build-*`, `.mysql-cache-*`...). Payload/ISO nhiều GiB bị bỏ dở vì vậy không bị giữ thêm 24 giờ. Cache tải MySQL dùng chung trong `%LOCALAPPDATA%` vẫn chỉ thu hồi file `.download` dở dang đã cũ ít nhất 24 giờ để không đụng một build khác đang tải.
+```powershell
+KiemTheDeployForge-Builder.exe --cli `
+  --client  D:\Client `
+  --server  D:\server `
+  --bot     D:\bot `           # tuỳ chọn
+  --sql     D:\jxaccount.sql `
+  --output  D:\release `
+  --root-password 1234 --bot-user bot_writer --bot-password 1234 `
+  --skip-iso                   # bỏ qua bước tạo ISO
+```
 
-Cache MySQL riêng của Forge trong `%LOCALAPPDATA%` cũng thu hồi các file `.download` dở dang đã cũ ít nhất 24 giờ; hủy bình thường vẫn xóa file tạm ngay trong lần chạy hiện tại.
+---
 
-## IP LAN tự động
+## Setup — cài đặt
 
-Setup không có ô nhập hoặc tham số thay thế IP. Nó tự ưu tiên IPv4 RFC1918 trên card mạng vật lý đang hoạt động và có default route. Nếu máy LAN cô lập không có gateway, Setup tự fallback sang card vật lý RFC1918 đang `Up`; lựa chọn luôn được xếp hạng ổn định theo metric, loại card, interface index, tên và địa chỉ IP. Loopback, APIPA, VPN và các card ảo phổ biến bị loại bỏ.
+Chạy bằng quyền Administrator. Setup tự tìm và mount ISO cùng thư mục; nếu chính nó đang nằm trong ISO đã mount thì đọc payload trực tiếp. ISO do Setup tự mount sẽ được tự dismount khi xong.
 
-Setup cập nhật đúng 21 khóa IP trong 12 file:
+Thư mục cài đặt mặc định là `C:\KiemTheServer` và **không được trùng hoặc bao trùm** thư mục chứa `Setup.exe` + ISO. Bước commit đổi tên thư mục staging thành thư mục cài đặt, nên thư mục đó bắt buộc chưa tồn tại. Setup báo ngay từ lúc chọn đường dẫn. Cài vào **thư mục con** của chỗ chứa ISO thì hợp lệ.
 
-- `Server\Gameserver\GS1servercfg.ini` đến `GS9servercfg.ini`: `[GameServer] InIp` và `OutIp` (18 khóa).
-- `Client\user\uicommon.ini`: `[Region_0] 1_Address`.
-- `Client\user\serverlistdebug.ini`: `[Region_1] 1_Address`.
-- `Client\AutoPk\serverlist.ini`: `[Region_0] 0_Address`.
+### Setup làm gì
 
-Nếu bản phát hành **không** đóng gói bot, toàn bộ bước cấu hình bot bị bỏ qua và cảnh báo 20 GiB ổ hệ thống cũng không hiện — đó là yêu cầu của bot, không phải của server.
+1. Giải nén `Client`, `Server` và `Bot` (nếu bản phát hành có bot), verify SHA-256 từng file.
+2. Tự nhận IP LAN rồi ghi vào **21 khoá** cấu hình.
+3. Ghi 6 khoá trong `Bot\loginprobe.env` (nếu có bot).
+4. Cài hoặc tiếp quản MySQL 5.5.15, tạo tài khoản, import `jxaccount`.
+5. Tạo 2 shortcut ngoài Desktop dùng chung.
 
-Khi có bot, Setup ghi thêm 6 khóa trong `Bot\loginprobe.env`: `BOT_GAMESERVER_DIR` trỏ đường dẫn tuyệt đối tới `<ThưMụcCàiĐặt>\Server\Gameserver`, cùng `BOT_DB_HOST`, `BOT_DB_PORT`, `BOT_DB_USER`, `BOT_DB_PASSWORD` và `BOT_DB_NAME`. Khóa đang bị comment sẽ được kích hoạt; khóa chưa có sẽ được thêm vào cuối file theo đúng kiểu xuống dòng của file đó. Chỉ `loginprobe.env` bị sửa — phần còn lại của cây Bot, kể cả thư mục dữ liệu `Sever` riêng bên trong nó, được giữ nguyên từng byte.
+### IP LAN tự động
 
-Bộ vá giữ nguyên BOM, kiểu xuống dòng, dữ liệu ngoài khóa đích, timestamp và thuộc tính file.
+Setup **không** có ô nhập IP. Nó ưu tiên IPv4 RFC1918 trên card mạng vật lý đang hoạt động và có default route. Máy LAN cô lập không có gateway thì fallback sang card vật lý RFC1918 đang `Up`. Lựa chọn được xếp hạng ổn định theo metric, loại card, interface index, tên và địa chỉ. Loopback, APIPA, VPN và các card ảo phổ biến bị loại.
 
-## MySQL và jxaccount
+### 21 khoá được ghi
 
-- Phiên bản cố định: MySQL `5.5.15 Win32`.
-- Service cục bộ: `KiemTheServer-MySQL`.
-- Kết nối cục bộ: `root` / `1234` (mặc định), bind `127.0.0.1:3306`.
-- Tài khoản bot: `bot_writer` / `1234` (mặc định) cho cả `@'localhost'` và `@'%'`, `GRANT ALL PRIVILEGES ON jxaccount.*`.
+| File | Section | Khoá |
+|---|---|---|
+| `Server\Gameserver\GS1..GS9servercfg.ini` | `[GameServer]` | `InIp`, `OutIp` (18 khoá) |
+| `Client\user\uicommon.ini` | `[Region_0]` | `1_Address` |
+| `Client\user\serverlistdebug.ini` | `[Region_1]` | `1_Address` |
+| `Client\AutoPk\serverlist.ini` | `[Region_0]` | `0_Address` |
 
-Mật khẩu `root`, tên user bot và mật khẩu bot **đổi được lúc đóng gói** qua nút *Tài khoản MySQL…* trong Builder, hoặc `--root-password` / `--bot-user` / `--bot-password` ở chế độ CLI. Giá trị được ghi vào manifest của bản phát hành, nên Setup tạo đúng tài khoản đã đóng gói và ghi luôn vào `loginprobe.env` của bot. Tên user `root` không đổi được — đó là superuser của MySQL, đổi tên nó là việc khác hẳn với đổi mật khẩu.
+Bộ vá giữ nguyên BOM, kiểu xuống dòng, dữ liệu ngoài khoá đích, timestamp và thuộc tính file. Mỗi khoá phải khớp **đúng một lần**, nếu không Setup dừng thay vì đoán.
 
-Bộ ký tự bị giới hạn có chủ đích: `sqlLiteral` chỉ nhân đôi dấu nháy đơn, còn MySQL mặc định coi `\` là ký tự escape, nên mật khẩu chỉ nhận ASCII in được, không khoảng trắng, không nháy và không gạch chéo ngược. Mật khẩu tối đa 32 ký tự; user bot tối đa 16 ký tự vì MySQL 5.5 cắt cụt tên dài hơn, không được trùng `root` và không được bắt đầu bằng `ktf` (tiền tố dành cho tài khoản import tạm thời). Bot tự phát `CREATE TABLE IF NOT EXISTS bot_runtime_state` nên quyền chỉ-ghi-dữ-liệu là không đủ. MySQL 5.5 không có `DROP USER IF EXISTS`, nên Setup dùng `GRANT ... IDENTIFIED BY` — vừa tạo mới vừa đặt lại mật khẩu, an toàn khi chạy lại lúc resume.
-- Nguồn chính thức: `https://cdn.mysql.com/archives/mysql-5.5/mysql-5.5.15-win32.zip`.
-- Kích thước: `139896749` byte.
-- SHA-256: `976571c110a9441a26ccf936407a90376dd30f0adce4cc6870be17fcc5ed001e`.
-- MD5 `127cf3abe2fa31b58d91e45e65194f25` chỉ được giữ làm metadata tương thích; SHA-256 là giá trị xác thực.
+### Cấu hình bot
+
+Khi bản phát hành có bot, Setup ghi 6 khoá trong `Bot\loginprobe.env`:
+
+- `BOT_GAMESERVER_DIR` → đường dẫn tuyệt đối tới `<ThưMụcCàiĐặt>\Server\Gameserver`
+- `BOT_DB_HOST`, `BOT_DB_PORT`, `BOT_DB_USER`, `BOT_DB_PASSWORD`, `BOT_DB_NAME`
+
+Khoá đang bị comment sẽ được kích hoạt; khoá chưa có được thêm vào cuối file theo đúng kiểu xuống dòng của file đó.
+
+> **Chỉ `loginprobe.env` bị sửa.** Phần còn lại của cây Bot — kể cả thư mục dữ liệu tên `Sever` nằm bên trong nó — được giữ nguyên từng byte. Đừng nhầm nó với thư mục `Server` cài đặt ở ngoài.
+
+### Shortcut Desktop
+
+| Shortcut | Trỏ tới |
+|---|---|
+| `Kiem The.lnk` | `Client\Game.exe` |
+| `Kiem The AutoPk.lnk` | `Client\AutoPk\wjxtdAutoPro.exe` |
+
+Đặt ở **Public Desktop** chứ không phải Desktop của admin, để user thường cũng thấy được — Setup chạy elevated nên nếu dùng Desktop cá nhân thì shortcut sẽ rơi vào tài khoản admin.
+
+---
+
+## MySQL và tài khoản
+
+- Phiên bản cố định: **MySQL 5.5.15 Win32**, pin theo SHA-256 `976571c1…d001e`, 139 896 749 byte.
+- Nguồn: `https://cdn.mysql.com/archives/mysql-5.5/mysql-5.5.15-win32.zip` — Builder tải một lần rồi cache trong `%LOCALAPPDATA%`, sau đó **đóng luôn vào ISO**. Máy đích không cần mạng.
+- Service: `KiemTheServer-MySQL`, bind `127.0.0.1:3306`.
+
+> Chuỗi `win32` chỉ mô tả gói MySQL legacy chạy thành service DB riêng. Builder, Setup và GameServer đều là **x64** (PE machine `0x8664`).
+
+### Tài khoản
+
+| Tài khoản | Mặc định | Quyền |
+|---|---|---|
+| `root` | `1234` | Toàn quyền |
+| `bot_writer` | `1234` | `GRANT ALL ON jxaccount.*` cho cả `@'localhost'` và `@'%'` |
+
+Bot tự phát `CREATE TABLE IF NOT EXISTS bot_runtime_state`, nên quyền chỉ-ghi-dữ-liệu là không đủ — phải có DDL.
+
+MySQL 5.5 không có `DROP USER IF EXISTS`, nên Setup dùng `GRANT … IDENTIFIED BY` — vừa tạo mới vừa đặt lại mật khẩu, an toàn khi chạy lại lúc resume.
+
+### Đổi tài khoản lúc đóng gói
+
+Mật khẩu `root`, tên user bot và mật khẩu bot đổi được qua nút *Tài khoản MySQL…*, hoặc `--root-password` / `--bot-user` / `--bot-password` ở CLI. Tên `root` **không** đổi được — đó là superuser của MySQL, đổi tên nó là việc khác hẳn với đổi mật khẩu.
+
+Bộ ký tự bị giới hạn có chủ đích:
+
+- **Mật khẩu**: ASCII in được, ≤ 32 ký tự, không khoảng trắng, không `'` `"` `` ` `` `\`
+- **User bot**: chữ/số/`_`, không bắt đầu bằng số, ≤ 16 ký tự, không trùng `root`, không bắt đầu bằng `ktf`
+
+Lý do: hàm `sqlLiteral` chỉ nhân đôi dấu nháy đơn, mà MySQL mặc định coi `\` là ký tự escape — mật khẩu chứa `\` sẽ bị diễn giải sai. MySQL 5.5 cắt cụt tên user dài quá 16 ký tự, sẽ tạo ra account mà bot không đăng nhập được. Tiền tố `ktf` dành cho các tài khoản import tạm thời.
 
 ### Khi máy đã có sẵn MySQL
 
-Nếu 127.0.0.1:3306 đã có MySQL chạy trước đó, Setup **tiếp quản** thay vì dừng lại. Trước đây nó báo lỗi và thoát, nhưng đó là xử lý sai cho trường hợp phổ biến nhất: người dùng đã cài sẵn MySQL của server game, nên không thể bind cổng lần hai và cũng chẳng có gì để sửa bằng cách dừng.
+Nếu `127.0.0.1:3306` đã có MySQL chạy trước đó, Setup **tiếp quản** thay vì dừng. Đó là trường hợp phổ biến nhất — người dùng đã cài sẵn MySQL của server game — và dừng lại thì chẳng sửa được gì, vì không thể bind cổng lần hai.
 
 Setup sẽ:
 
-1. Đăng nhập bằng `root` / `1234`; nếu `root` chưa có mật khẩu thì đặt thành `1234` theo đúng cam kết của bản phát hành.
-2. Tạo hoặc cập nhật `bot_writer` / `1234` với `GRANT ALL ON jxaccount.*`.
-3. Kiểm tra `jxaccount`: nếu đã đủ bảng đúng schema thì **giữ nguyên**, không import đè; nếu chưa có thì import.
+1. Đăng nhập `root`/mật khẩu của bản phát hành; nếu `root` chưa có mật khẩu thì đặt theo đúng cam kết.
+2. Tạo hoặc cập nhật user bot với `GRANT ALL ON jxaccount.*`.
+3. Kiểm tra `jxaccount`: đủ bảng đúng schema thì **giữ nguyên**, chưa có thì import.
 
-Server sẵn có được coi là tài sản của người khác. Khác với MySQL do Setup tự cài, đường tiếp quản **không** xóa tài khoản ẩn danh, **không** drop database `test` và **không** ghi đè file cấu hình nào.
+Server sẵn có được coi là tài sản của người khác. Khác với MySQL do Setup tự cài, đường tiếp quản **không** xoá tài khoản ẩn danh, **không** drop database `test`, **không** ghi đè file cấu hình nào.
 
-Nếu không đăng nhập được bằng `root`/`1234` lẫn mật khẩu rỗng, Setup dừng và nói rõ hai lựa chọn: tắt MySQL đó để Setup cài service riêng, hoặc đặt mật khẩu `root` thành `1234` rồi chạy lại.
+Không đăng nhập được bằng cả mật khẩu của bản phát hành lẫn mật khẩu rỗng thì Setup dừng và nêu rõ hai lựa chọn: tắt MySQL đó để Setup cài service riêng, hoặc đặt lại mật khẩu `root` rồi chạy lại.
 
-### Chọn thư mục cài đặt
+### Import jxaccount
 
-Thư mục cài đặt **không được trùng hoặc bao trùm** thư mục chứa `Setup.exe` và file ISO. Bước commit đổi tên thư mục staging thành thư mục cài đặt, nên thư mục đó bắt buộc chưa tồn tại. Setup phát hiện và báo ngay từ lúc chọn đường dẫn. Cài vào **thư mục con** của chỗ chứa ISO thì vẫn hợp lệ.
+`jxaccount.sql` được import vào một database staging tên ngẫu nhiên, kiểm tra đủ tập bảng và khả năng ghi bảng `account`, rồi mới publish bằng một lệnh multi-table `RENAME TABLE`.
 
-Runtime và data template được tạo trong thư mục tạm cùng volume, kiểm tra trước khi rename sang vị trí cuối. Nếu lần cài trước dừng giữa chừng, Setup có thể sửa phần runtime/data dở dang do chính nó tạo và tiếp tục. Service hoặc dữ liệu không chứng minh được thuộc quá trình cài đặt sẽ không bị xóa hay ghi đè.
+Marker bền vững gắn với SHA-256 của đúng file SQL giúp Setup resume sau gián đoạn. Database không rỗng nhưng không có bằng chứng hoàn tất sẽ được **giữ nguyên**, không `DROP` hay import lại mù.
 
-Mỗi lần resume, toàn bộ file runtime MySQL bất biến được SHA-256 lại và đối chiếu byte với chính ZIP đã pin; file hoặc thư mục runtime không có trong gói bị từ chối. `my.ini` của service cũng phải khớp chính xác policy local-only do installer sinh trước khi binary quản trị database được chạy.
+Trong lúc import, watchdog kiểm tra dung lượng mỗi giây và huỷ client trước khi phần trống xuống dưới 2 GiB.
 
-Các vòng copy runtime/data kiểm tra tín hiệu hủy theo từng block I/O. Thư mục chuẩn bị MySQL có marker sở hữu riêng; lần chạy kế tiếp chỉ thu hồi đúng staging có marker hợp lệ, không quét hoặc xóa thư mục lạ chỉ vì trùng tiền tố.
+---
 
-Marker sở hữu staging được giữ xuyên suốt thao tác rename nguyên tử. Nếu tiến trình bị kill đúng lúc commit, lần chạy kế tiếp có thể phân biệt staging cũ với dữ liệu ngoài phạm vi và thu hồi marker sau khi xác nhận đúng release, thay vì để một thư mục mồ côi chặn cài đặt.
+## Dung lượng ổ đĩa
 
-Khi Setup bị kill trong lúc giải nén, lần chạy kế tiếp giữ mutex của đúng thư mục cài đặt rồi thu hồi mọi staging có marker sở hữu hợp lệ cho thư mục đó, kể cả staging thuộc release cũ. Dữ liệu không có marker hoặc marker không khớp đường dẫn luôn được giữ nguyên.
+Setup kiểm tra hai ổ tách biệt và hiển thị cả hai trước khi cài:
 
-`jxaccount.sql` được import vào một database staging tên ngẫu nhiên, kiểm tra đủ tập bảng và khả năng ghi bảng `account`, rồi mới publish bằng một lệnh multi-table `RENAME TABLE`. Marker bền vững gắn với SHA-256 của đúng file SQL giúp Setup resume sau gián đoạn; database không rỗng nhưng không có bằng chứng hoàn tất sẽ được giữ nguyên, không bị `DROP` hoặc import lại mù.
+| Ổ | Yêu cầu | Không đủ thì |
+|---|---|---|
+| Ổ chứa thư mục cài đặt | Payload + phần mở rộng MySQL + import SQL | **Chặn**, không cho cài |
+| Ổ hệ thống Windows (thường là `C:`) | 20 GiB trống cho bot | **Cảnh báo**, vẫn cho cài |
 
-Preflight cài đặt cộng thêm ngân sách mở rộng SQL; sau khi payload commit, Setup đọc central directory của ZIP MySQL để tính chính xác runtime giải nén và bản sao data template. Trong lúc import, watchdog kiểm tra dung lượng mỗi giây, hủy client trước khi phần trống xuống dưới 2 GiB và cố thu hồi ngay database staging chưa hoàn tất. Nếu MySQL chưa nhả tài nguyên kịp, marker vẫn giữ đủ định danh để lần chạy sau thu hồi an toàn.
+Bot ghi dữ liệu làm việc lên ổ hệ thống bất kể bạn cài ở ổ nào, nên nó được kiểm tra riêng. Bản phát hành **không có bot** thì cảnh báo này không hiện.
 
-## Build và kiểm tra
+Con số dung lượng được đọc lại theo đúng thư mục bạn chọn, kể cả khi đổi thư mục sau bước preflight.
+
+---
+
+## Build từ mã nguồn
+
+Chỉ cần cài [Go](https://go.dev/dl/). Không cần MinGW, windres hay công cụ ngoài nào khác.
+
+```powershell
+.\Build.bat          # build + audit + publish ra dist\
+.\Build.bat check    # thêm gofmt, go vet, go test trước khi build
+```
+
+Hoặc gọi thẳng script:
 
 ```powershell
 .\scripts\Build-Tools.ps1
 .\scripts\Build-Tools.ps1 -ValidateSource
-# Chỉ chạy smoke riêng khi chủ động cần kiểm tra fixture nhỏ.
-.\scripts\Smoke-Test-Packager.ps1
+.\scripts\Smoke-Test-Packager.ps1              # chỉ chạy khi chủ động cần
+.\scripts\Smoke-Test-Packager.ps1 -IncludeIso  # chỉ khi cần kiểm tra IMAPI/UDF
 ```
 
-`Build-Tools.ps1` mặc định chỉ build hai executable x64 và kiểm tra PE machine `0x8664` trước khi publish từng file. Script khóa `GOFLAGS`, `GOENV`, `GOTOOLCHAIN`, `GOWORK`, `GOEXPERIMENT`, `CGO_ENABLED`, `GOOS`, `GOARCH`, `GOAMD64=v1` và `GOFIPS140=off`, ép module ở chế độ `readonly`, resolve một `go.exe` tuyệt đối rồi bắt buộc chạy `Audit-Build.ps1` bằng chính executable đó trên cả hai file tạm trước publish. Các bước `gofmt`,
-`go test` và `go vet` chỉ chạy khi chủ động truyền `-ValidateSource`; smoke test
-luôn là lệnh riêng, không tự chạy trong quá trình build hoặc đóng gói ISO.
+`Build-Tools.ps1` khoá môi trường Go (`GOFLAGS`, `GOENV`, `GOTOOLCHAIN`, `GOWORK`, `GOEXPERIMENT`, `CGO_ENABLED`, `GOOS`, `GOARCH`, `GOAMD64=v1`, `GOFIPS140=off`), ép module ở chế độ `readonly`, resolve một `go.exe` tuyệt đối, sinh lại resource từ manifest, build cả hai executable, kiểm tra PE machine `0x8664`, chạy `Audit-Build.ps1`, rồi mới publish. Publish thất bại thì rollback.
 
-`Build-Tools.ps1` giữ mutex toàn máy cho toàn lượt publish. Setup mới được đưa vào Builder qua overlay build chỉ định rõ, nên validation hoặc build Builder không cần ghi đè `SetupStub.exe` đang phát hành. Builder tự chứa đúng Setup mới được publish trước; nếu publish Setup thất bại trong luồng bình thường, Builder được rollback. Sau một hard-kill,
-lượt kế tiếp thu hồi chính xác các tên tạm riêng `.SetupStub-*.exe`,
-`.BuilderOverlay-*.json`, `.Builder-*.exe` và `.publish-backup-*`; nó không quét hoặc xóa artifact ngoài
-các pattern nội bộ này.
+`Audit-Build.ps1` đọc trực tiếp PE header và từ chối binary không phải amd64, ngoài việc kiểm tra metadata module Go và quét chuỗi ASCII/UTF-16 thuộc phạm vi nội bộ không được lọt ra bản phát hành.
 
-`Audit-Build.ps1` đọc trực tiếp PE header và từ chối mọi Builder/Setup không có machine `0x8664` (`amd64`), ngoài kiểm tra metadata module Go, vật liệu nhạy cảm và chuỗi ASCII/UTF-16 thuộc scope bot, license, `src-bot`, key activation, phase 8 hoặc phase 9. `Build-Tools.ps1` tự gọi audit trong môi trường đã khóa; chạy audit trực tiếp bên ngoài môi trường đó sẽ chủ động bị từ chối.
+Smoke test sao chép riêng `src` và `scripts` vào cây `.smoke-*`, build/chạy Builder ở đó rồi chạy `Setup.exe --cli-plan --verify` với fixture nhỏ. Nó **không** thay `dist\KiemTheDeployForge-Builder.exe`, không cài service, không khởi động MySQL. Đừng dùng cây Client/Server/Bot thật làm fixture.
 
-Builder và Setup không gọi `powershell.exe` qua current directory hoặc `PATH`.
-Các bước dò LAN, mount/dismount và tạo UDF luôn resolve Windows PowerShell từ
-system directory thật rồi mới chạy ẩn, giảm đường hijack khi đóng gói/cài đặt.
+### Application manifest
 
-Smoke test mặc định sao chép riêng `src` và `scripts` vào cây `.smoke-*`, build/chạy Builder ở đó rồi chạy `Setup.exe --cli-plan --verify` với Client/Server/Bot fixture nhỏ và payload rời. Nó không thay `dist\KiemTheDeployForge-Builder.exe` hay `src\cmd\builder\assets\SetupStub.exe` của project chính, không tạo ISO, không cài service và không khởi động MySQL. Chỉ dùng `Smoke-Test-Packager.ps1 -IncludeIso` khi thật sự cần kiểm tra IMAPI/UDF, và không dùng cây Client/Server/Bot thật làm fixture.
-Smoke test có mutex toàn máy riêng và marker sở hữu. Toàn bộ cây `.smoke-*`, tool copy, log, payload và ISO (nếu được yêu cầu rõ ràng) được dismount rồi xóa có retry trong `finally`; lượt sau cũng thu hồi cây có marker hợp lệ của một tiến trình đã bị hard-kill.
+Cả hai GUI nhúng application manifest khai báo **Common-Controls 6.0**. Thiếu manifest thì `walk` gửi `TTM_ADDTOOL` theo layout comctl32 v6 trong khi Windows nạp comctl32 v5, và cả hai cửa sổ panic trước khi hiện ra.
 
-## Cấu trúc
+`cmd\genrsrc` (Go thuần) sinh `rsrc_windows_amd64.syso` từ `Builder.manifest` / `Setup.manifest` ở mỗi lần build, và validate XML trước — một manifest hỏng vẫn link được nhưng Windows sẽ từ chối chạy với lỗi *"side-by-side configuration is incorrect"* rất khó truy. Các file `.syso` được commit vào repo để `go build` trần cũng ra GUI chạy được.
 
-- `src\cmd\builder`: GUI Builder và chế độ CLI phục vụ kiểm thử.
-- `src\cmd\setup`: GUI Setup và chế độ plan/install phục vụ kiểm thử có kiểm soát.
-- `src\internal\builder`: quét, hash, ghi ZIP64 payload và Setup bootstrap nhỏ.
-- `src\internal\sfx`: đọc manifest pin trong Setup, kiểm tra và giải nén `Payload.ktpkg` ZIP64 Store.
-- `src\internal\iso`: tạo và xác minh ISO UDF bằng IMAPI2, không mở trình ghi đĩa.
-- `src\internal\install`: tự tìm/mount ISO, staging, journal, resume và commit cài đặt.
+`src\cmd\builder\assets\SetupStub.exe` **không** được commit — nó là build output. Placeholder `README.txt` cạnh nó được commit để `//go:embed assets/*` luôn khớp ít nhất một file, nếu không thì clone mới không compile nổi.
 
-## Kiểm thử máy sạch
+---
 
-Trước khi phát hành thật cần chạy UAT trên Windows sạch với quyền Administrator, card LAN vật lý, đủ dung lượng NTFS và không có tiến trình khác chiếm cổng `3306`. Nên ký Authenticode cho Builder và Setup trong pipeline phát hành; vật liệu ký không được đặt trong source hoặc artifact trung gian.
+## Cấu trúc mã nguồn
+
+```
+Build.bat                     Điểm vào duy nhất để build
+scripts/
+  Build-Tools.ps1             Build, audit, publish có rollback
+  Audit-Build.ps1             Kiểm tra PE header và phạm vi chuỗi
+  Smoke-Test-Packager.ps1     Kiểm thử end-to-end với fixture nhỏ
+src/
+  cmd/builder/                GUI Builder + chế độ CLI
+  cmd/setup/                  GUI Setup + chế độ plan/install
+  cmd/genrsrc/                Sinh .syso từ application manifest
+  internal/
+    builder/                  Quét, hash, ghi ZIP64 payload, Setup bootstrap
+    install/                  Mount ISO, staging, journal, resume, commit, shortcut
+    database/                 MySQL 5.5.15, tài khoản, import jxaccount
+    configpatch/              Vá INI và dotenv giữ nguyên định dạng
+    iso/                      Tạo và xác minh ISO UDF bằng IMAPI2
+    sfx/                      Đọc manifest pin, giải nén Payload.ktpkg
+    release/                  Manifest, tài khoản, verify file
+    network/                  Dò IP LAN
+    guiutil/                  Theme, progress meter, console, throttle
+    winfile/  winprocess/     Tiện ích Windows
+```
+
+---
+
+## Thiết kế đáng lưu ý
+
+### Giao diện tiến độ
+
+Cả hai cửa sổ dùng chung bộ widget trong `internal/guiutil`:
+
+- **Phần trăm nằm bên trong thanh tiến trình** (`Meter`, `CustomWidget` vẽ tay ở chế độ `PaintBuffered`). Dùng `Label` riêng cạnh `ProgressBar` khiến độ rộng label đổi theo từng giá trị, layout bị tính lại liên tục, cộng với repaint không double-buffer — kết quả là nháy liên hồi.
+- **Stage và tên file ở hai dòng riêng, mỗi dòng chiếm trọn chiều ngang**, nên text dài ngắn khác nhau không làm co giãn hàng xóm. Dòng tên file dùng `EllipsisPath`.
+- **Console cuộn kiểu terminal** (`Console`): nền tối, monospace, chỉ append, giữ 4000 dòng scrollback.
+- **`Relay` tiết chế cập nhật xuống tối đa một lần mỗi 90 ms.** Pipeline báo tiến độ mỗi block I/O — hàng nghìn lần mỗi giây trên payload lớn. Relay gộp chúng lại nhưng không bao giờ bỏ lỡ một lần đổi stage hay báo cáo cuối cùng.
+
+### An toàn khi bị gián đoạn
+
+- Toàn máy chỉ cho phép **một** build đóng gói nặng tại một thời điểm, kể cả khi các tiến trình chọn thư mục output khác nhau.
+- Builder ghi marker giao dịch trước khi tạo output cuối. Bị hard-kill hoặc mất điện giữa chừng thì lần build kế tiếp **chỉ** thu hồi đúng bốn file output khi marker chứng minh được quyền sở hữu.
+- Setup dùng staging + `rename` nguyên tử, có journal và marker sở hữu. Dữ liệu không có marker, hoặc marker không khớp đường dẫn, **luôn được giữ nguyên**.
+- Mỗi lần resume, toàn bộ file runtime MySQL bất biến được SHA-256 lại và đối chiếu byte với chính ZIP đã pin. File hoặc thư mục runtime không có trong gói bị từ chối. `my.ini` cũng phải khớp chính xác policy local-only do installer sinh.
+- Service hoặc dữ liệu không chứng minh được thuộc quá trình cài đặt sẽ **không** bị xoá hay ghi đè.
+- Cache tải MySQL dùng chung trong `%LOCALAPPDATA%` chỉ thu hồi file `.download` dở dang đã cũ ít nhất 24 giờ, để không đụng một build khác đang tải.
+
+### Chống hijack
+
+Builder và Setup **không** gọi `powershell.exe` qua current directory hoặc `PATH`. Các bước dò LAN, mount/dismount, tạo UDF và tạo shortcut đều resolve Windows PowerShell từ system directory thật rồi mới chạy ẩn.
+
+---
+
+## Trước khi phát hành thật
+
+Chạy UAT trên Windows sạch với:
+
+- Quyền Administrator
+- Card LAN vật lý
+- Đủ dung lượng NTFS
+- Không có tiến trình khác chiếm cổng `3306` (hoặc có, để kiểm tra đúng đường tiếp quản)
+
+Nên ký Authenticode cho Builder và Setup trong pipeline phát hành. **Vật liệu ký không được đặt trong source hoặc artifact trung gian** — `.gitignore` đã chặn `*.pfx`, `*.p12`, `*.pem`, `*.key`, nhưng đừng dựa vào đó thay cho quy trình.
