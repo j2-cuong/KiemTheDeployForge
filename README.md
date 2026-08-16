@@ -109,7 +109,29 @@ Thư mục cài đặt mặc định là `C:\KiemTheServer` và **không đượ
 
 ### IP LAN tự động
 
-Setup **không** có ô nhập IP. Nó ưu tiên IPv4 RFC1918 trên card mạng vật lý đang hoạt động và có default route. Máy LAN cô lập không có gateway thì fallback sang card vật lý RFC1918 đang `Up`. Lựa chọn được xếp hạng ổn định theo metric, loại card, interface index, tên và địa chỉ. Loopback, APIPA, VPN và các card ảo phổ biến bị loại.
+Setup tự dò IPv4 theo năm tầng, từ chặt tới lỏng, và dừng ở tầng đầu tiên tìm được kết quả. **Ô "Địa chỉ IPv4" điền sẵn kết quả dò được nhưng vẫn sửa được** trước khi bấm cài.
+
+| Tầng | Nguồn | Điều kiện | Dành cho |
+|:---:|---|---|---|
+| 1 | `Get-NetRoute` | Card vật lý, IP RFC1918, có default route | Máy LAN bình thường |
+| 2 | `Get-NetAdapter` | Card vật lý, IP RFC1918, đang `Up` | LAN cô lập không có gateway |
+| 3 | `Get-NetRoute` | Card bất kỳ kể cả card ảo hoá, IP bất kỳ, có default route | **Máy chủ thuê (VPS)** |
+| 4 | `Get-NetAdapter` | Card bất kỳ đang `Up`, IP bất kỳ | VPS không có default route |
+| 5 | `net.Interfaces()` | Mọi địa chỉ Windows đang gán | Windows cũ không có cmdlet `Get-Net*` |
+
+Tầng 5 đọc thẳng từ Go runtime — cùng một API mà `ipconfig` dùng, nhưng trả về dữ liệu có cấu trúc. Không parse text `ipconfig` vì output bị dịch theo ngôn ngữ hệ điều hành: Windows tiếng Việt in `Địa chỉ IPv4` chứ không phải `IPv4 Address`.
+
+Máy LAN vẫn ưu tiên IP riêng như trước — tầng 1 và 2 chạy trước nên hành vi không đổi. Tầng 3 và 4 mới là phần cứu VPS: ở đó card mạng thường là thiết bị ảo hoá (VirtIO, VMXNET3, Hyper-V, Xen) mang **địa chỉ công cộng**, mà cả hai đặc điểm đó đều bị tầng 1–2 loại.
+
+Loại **ở mọi tầng**: loopback, APIPA `169.254.x`, multicast, dải reserved, và các card overlay — `vEthernet`, VPN, TAP, tunnel, WSL, WireGuard, OpenVPN, Tailscale, ZeroTier, Hamachi, Docker, npcap, Bluetooth, WAN Miniport. Đó không bao giờ là đường mạng thật của máy.
+
+Lựa chọn trong mỗi tầng được xếp hạng ổn định theo metric, loại card, interface index, tên rồi địa chỉ, nên cùng một máy luôn cho cùng một kết quả.
+
+Nếu địa chỉ chọn được là **công cộng**, Setup hiện cảnh báo trước khi cài — đúng với VPS nhưng là dấu hiệu sai nếu bạn tưởng đang cài trong LAN. Khi không tìm được gì, thông báo lỗi **liệt kê đúng những địa chỉ máy đã báo** thay vì chỉ nói "không tìm thấy".
+
+**Dò thất bại không còn là ngõ cụt.** Setup vẫn hiện thông tin gói và dung lượng, để trống ô địa chỉ và mời bạn tự nhập. Đây là cách duy nhất xử lý VPS nằm sau NAT của nhà cung cấp (AWS, GCP, Azure): ở đó IP công cộng do nhà cung cấp giữ, không hề gán lên card nào của máy nên không có cách nào dò ra.
+
+Giá trị nhập tay được kiểm tra ngay khi gõ và một lần nữa trước khi cài. Nút CÀI ĐẶT chỉ bật khi địa chỉ hợp lệ — sai một chữ số là ra một server không ai kết nối được. Chế độ CLI dùng `--lan-address`.
 
 ### 21 khoá được ghi
 

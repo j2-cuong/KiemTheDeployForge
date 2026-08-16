@@ -1,70 +1,44 @@
 package main
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 )
 
-func TestSetupHasNoLANOverrideFlagAndDisplaysReadOnlyDetection(t *testing.T) {
+// The address field was read-only while detection was the only source. It is
+// editable now, because detection cannot see the address of a hosted server
+// behind provider NAT. These checks pin the parts that keep the change safe:
+// the field is still pre-filled from detection, and nothing reaches the
+// installer without being validated first.
+func TestSetupValidatesTheEditableAddressField(t *testing.T) {
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("cannot locate setup source")
 	}
 	mainPath := strings.TrimSuffix(filename, "ip_policy_windows_test.go") + "main.go"
-	raw, err := parser.ParseFile(token.NewFileSet(), mainPath, nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	forbiddenFlags := map[string]bool{
-		"lan": true, "lanip": true, "ip": true, "ipv4": true,
-		"ipaddress": true, "lanaddress": true, "serverip": true,
-	}
-	ast.Inspect(raw, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		selector, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		argument := 0
-		if strings.HasSuffix(selector.Sel.Name, "Var") {
-			argument = 1
-		}
-		if argument >= len(call.Args) {
-			return true
-		}
-		literal, ok := call.Args[argument].(*ast.BasicLit)
-		if !ok || literal.Kind != token.STRING {
-			return true
-		}
-		name, err := strconv.Unquote(literal.Value)
-		if err != nil {
-			return true
-		}
-		normalized := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(name))
-		if forbiddenFlags[normalized] {
-			t.Errorf("setup exposes forbidden LAN/IP override flag %q", name)
-		}
-		return true
-	})
-
 	sourceBytes, err := os.ReadFile(mainPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	source := string(sourceBytes)
-	if !strings.Contains(source, "LineEdit{AssignTo: &lanEdit, ReadOnly: true") {
-		t.Fatal("detected LAN IPv4 is not displayed in a read-only field")
+
+	if strings.Contains(source, "AssignTo: &lanEdit, ReadOnly: true") {
+		t.Fatal("the address field is read-only again; a NAT'd server cannot be installed")
 	}
 	if !strings.Contains(source, "lanEdit.SetText(plan.LAN.Address)") {
-		t.Fatal("LAN display is not populated from the auto-detected install plan")
+		t.Fatal("the address field is not pre-filled from detection")
+	}
+	// Typed input must go through network.Manual before it is used, otherwise a
+	// typo becomes a server nobody can reach.
+	if !strings.Contains(source, "network.Manual(text)") {
+		t.Fatal("typed input is not validated while the operator edits it")
+	}
+	if !strings.Contains(source, "network.Manual(lanAddress)") {
+		t.Fatal("typed input is not validated before the install starts")
+	}
+	if !strings.Contains(source, "LANAddress: lanCandidate.Address") {
+		t.Fatal("the installer is not given the validated address")
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"kiemthedeployforge/internal/database"
 	"kiemthedeployforge/internal/guiutil"
 	"kiemthedeployforge/internal/install"
+	"kiemthedeployforge/internal/network"
 )
 
 // uiRefreshInterval caps how often the install pipeline is allowed to repaint
@@ -27,6 +28,19 @@ const uiRefreshInterval = 90 * time.Millisecond
 
 func gib(value uint64) float64 {
 	return float64(value) / (1024 * 1024 * 1024)
+}
+
+// lanSummary names the address that will be written and how it was chosen, so
+// an unexpected pick is visible before the install rather than after.
+func lanSummary(plan *install.Plan) string {
+	if plan.LAN.Address == "" {
+		return "Chưa dò được IPv4 — hãy nhập thủ công"
+	}
+	kind := "LAN riêng"
+	if !plan.LAN.Private {
+		kind = "công cộng"
+	}
+	return fmt.Sprintf("Sẵn sàng — IPv4 %s (%s) trên card %q", plan.LAN.Address, kind, plan.LAN.Interface)
 }
 
 // releaseLayoutSummary describes what this particular release will create. The
@@ -87,11 +101,12 @@ func runCLIPlan(args []string) int {
 	set := flag.NewFlagSet("plan", flag.ContinueOnError)
 	setupPath := set.String("setup", executablePath(), "Setup.exe bootstrap next to the offline ISO")
 	root := set.String("install-root", `C:\KiemTheServer`, "installation directory")
+	lan := set.String("lan-address", "", "IPv4 address to write into the configuration (default: detect)")
 	verify := set.Bool("verify", false, "hash all files in the offline payload package")
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
-	plan, err := install.BuildPlan(context.Background(), install.Options{SetupPath: *setupPath, InstallRoot: *root, VerifyPackage: *verify})
+	plan, err := install.BuildPlan(context.Background(), install.Options{SetupPath: *setupPath, InstallRoot: *root, LANAddress: *lan, VerifyPackage: *verify})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -105,6 +120,7 @@ func runCLIInstall(args []string) int {
 	set := flag.NewFlagSet("install", flag.ContinueOnError)
 	setupPath := set.String("setup", executablePath(), "Setup.exe bootstrap next to the offline ISO")
 	root := set.String("install-root", `C:\KiemTheServer`, "installation directory")
+	lan := set.String("lan-address", "", "IPv4 address to write into the configuration (default: detect)")
 	if err := set.Parse(args); err != nil {
 		return 2
 	}
@@ -112,7 +128,7 @@ func runCLIInstall(args []string) int {
 		fmt.Fprintln(os.Stderr, "Administrator permission is required")
 		return 1
 	}
-	state, err := install.Run(context.Background(), install.Options{SetupPath: *setupPath, InstallRoot: *root, Logf: func(format string, args ...any) { fmt.Printf(format+"\n", args...) }}, func(percent int, stage, detail string) {
+	state, err := install.Run(context.Background(), install.Options{SetupPath: *setupPath, InstallRoot: *root, LANAddress: *lan, Logf: func(format string, args ...any) { fmt.Printf(format+"\n", args...) }}, func(percent int, stage, detail string) {
 		fmt.Printf("%d%% %s: %s\n", percent, stage, detail)
 	})
 	if err != nil {
@@ -127,7 +143,7 @@ func runCLIInstall(args []string) int {
 func runGUI() {
 	var mw *walk.MainWindow
 	var rootEdit, lanEdit *walk.LineEdit
-	var stageLabel, fileLabel, packageLabel, diskLabel, layoutLabel *walk.Label
+	var stageLabel, fileLabel, packageLabel, diskLabel, layoutLabel, lanHintLabel *walk.Label
 	var installButton, cancelButton *walk.PushButton
 	var rootBrowseButton *walk.PushButton
 	var cancel context.CancelFunc
@@ -139,6 +155,39 @@ func runGUI() {
 
 	meter, meterWidget := guiutil.NewMeter()
 	console, consoleWidget := guiutil.NewConsole(200)
+
+	// refreshLANHint validates whatever is typed now and enables the install
+	// button only for an address that can actually be written.
+	refreshLANHint := func() {
+		if lanHintLabel == nil || installButton == nil {
+			return
+		}
+		text := strings.TrimSpace(lanEdit.Text())
+		if text == "" {
+			lanHintLabel.SetTextColor(guiutil.ColorWarn)
+			lanHintLabel.SetText("Cần nhập IPv4")
+			installButton.SetEnabled(false)
+			return
+		}
+		candidate, err := network.Manual(text)
+		if err != nil {
+			lanHintLabel.SetTextColor(guiutil.ColorWarn)
+			lanHintLabel.SetText("Địa chỉ không hợp lệ")
+			installButton.SetEnabled(false)
+			return
+		}
+		if candidate.Private {
+			lanHintLabel.SetTextColor(guiutil.ColorOk)
+			lanHintLabel.SetText("IP LAN riêng")
+		} else {
+			lanHintLabel.SetTextColor(guiutil.ColorTextMuted)
+			lanHintLabel.SetText("IP công cộng")
+		}
+		stateMu.Lock()
+		active := running
+		stateMu.Unlock()
+		installButton.SetEnabled(!active)
+	}
 
 	// refreshDiskSummary re-reads free space for whatever directory is typed
 	// now. The preflight plan was measured against the default directory, so
@@ -177,7 +226,8 @@ func runGUI() {
 		stateMu.Unlock()
 		rootEdit.SetEnabled(!value)
 		rootBrowseButton.SetEnabled(!value)
-		installButton.SetEnabled(!value && lanEdit.Text() != "")
+		lanEdit.SetEnabled(!value)
+		installButton.SetEnabled(!value && strings.TrimSpace(lanEdit.Text()) != "")
 		cancelButton.SetEnabled(value)
 	}
 	takeCloseAfterRun := func() bool {
@@ -205,7 +255,12 @@ func runGUI() {
 			walk.MsgBox(mw, "Choose another installation directory", err.Error(), walk.MsgBoxIconError)
 			return
 		}
-		detectedLAN := strings.TrimSpace(lanEdit.Text())
+		lanAddress := strings.TrimSpace(lanEdit.Text())
+		lanCandidate, lanErr := network.Manual(lanAddress)
+		if lanErr != nil {
+			walk.MsgBox(mw, "Địa chỉ IPv4 không hợp lệ", lanErr.Error(), walk.MsgBoxIconError)
+			return
+		}
 		targetFree, freeErr := install.AvailableBytes(root)
 		if freeErr != nil {
 			walk.MsgBox(mw, "Disk check failed", freeErr.Error(), walk.MsgBoxIconError)
@@ -222,20 +277,28 @@ func runGUI() {
 			walk.MsgBox(mw, "Disk check failed", systemErr.Error(), walk.MsgBoxIconError)
 			return
 		}
+		components := install.ClientTargetRoot + ", " + install.ServerTargetRoot
+		if latestPlan != nil && latestPlan.IncludesBot {
+			components += ", " + install.BotTargetRoot
+		}
+		addressKind := "công cộng"
+		if lanCandidate.Private {
+			addressKind = "LAN riêng"
+		}
 		message := fmt.Sprintf(
-			"Install %s, %s, %s, the local MySQL service and jxaccount to:\r\n\r\n%s\r\n\r\n"+
-				"Free on the target: %.2f GiB\r\nFree on %s (used by the bot): %.2f GiB\r\n\r\n"+
-				"LAN IPv4 detected during preflight: %s\r\nSetup will detect LAN again inside the background installation flow.",
-			install.ClientTargetRoot, install.ServerTargetRoot, install.BotTargetRoot, root,
-			gib(targetFree), systemDrive, gib(systemFree), detectedLAN)
+			"Cài %s, MySQL và jxaccount vào:\r\n\r\n%s\r\n\r\n"+
+				"Địa chỉ IPv4 sẽ ghi vào cấu hình: %s (%s)\r\n\r\n"+
+				"Trống trên ổ đích: %.2f GiB\r\nTrống trên %s: %.2f GiB",
+			components, root, lanCandidate.Address, addressKind,
+			gib(targetFree), systemDrive, gib(systemFree))
 		icon := walk.MsgBoxIconQuestion
-		if systemFree < install.BotSystemDriveFreeBytes {
-			message += fmt.Sprintf("\r\n\r\nWARNING: the bot needs at least %.0f GiB free on %s. "+
-				"You can still install now, but free up space on %s before starting the bot.",
+		if latestPlan != nil && latestPlan.IncludesBot && systemFree < install.BotSystemDriveFreeBytes {
+			message += fmt.Sprintf("\r\n\r\nCẢNH BÁO: bot cần tối thiểu %.0f GiB trống trên %s. "+
+				"Vẫn cài được, nhưng hãy giải phóng dung lượng trên %s trước khi chạy bot.",
 				gib(install.BotSystemDriveFreeBytes), systemDrive, systemDrive)
 			icon = walk.MsgBoxIconWarning
 		}
-		answer := walk.MsgBox(mw, "Start installation", message, walk.MsgBoxYesNo|icon)
+		answer := walk.MsgBox(mw, "Bắt đầu cài đặt", message, walk.MsgBoxYesNo|icon)
 		if answer != walk.DlgCmdYes {
 			return
 		}
@@ -250,7 +313,7 @@ func runGUI() {
 		relay := guiutil.NewRelay(uiRefreshInterval)
 		go func() {
 			state, installErr := install.Run(ctx, install.Options{
-				SetupPath: setupPath, InstallRoot: root,
+				SetupPath: setupPath, InstallRoot: root, LANAddress: lanCandidate.Address,
 				Logf: func(format string, args ...any) {
 					message := fmt.Sprintf(format, args...)
 					mw.Synchronize(func() { console.Append("   " + message) })
@@ -355,9 +418,10 @@ func runGUI() {
 									LineEdit{AssignTo: &rootEdit, Text: `C:\KiemTheServer`, MinSize: Size{Height: 24}},
 									PushButton{AssignTo: &rootBrowseButton, Text: "Duyệt…", MinSize: Size{Width: 90, Height: 26}, OnClicked: browseRoot},
 
-									Label{Text: "IPv4 LAN tự nhận", TextColor: guiutil.ColorText},
-									LineEdit{AssignTo: &lanEdit, ReadOnly: true, CueBanner: "Đang tự dò card mạng vật lý…", MinSize: Size{Height: 24}},
-									Label{Text: "Tự động", TextColor: guiutil.ColorOk},
+									Label{Text: "Địa chỉ IPv4", TextColor: guiutil.ColorText},
+									LineEdit{AssignTo: &lanEdit, CueBanner: "Đang tự dò địa chỉ IPv4…", MinSize: Size{Height: 24},
+										OnTextChanged: func() { refreshLANHint() }},
+									Label{AssignTo: &lanHintLabel, Text: "Tự động", TextColor: guiutil.ColorTextMuted, MinSize: Size{Width: 150}},
 								},
 							},
 						},
@@ -454,9 +518,28 @@ func runGUI() {
 			refreshDiskSummary()
 			if plan.BotDiskWarning != "" {
 				diskLabel.SetTextColor(guiutil.ColorWarn)
-				walk.MsgBox(mw, "Not enough space for the bot", plan.BotDiskWarning, walk.MsgBoxIconWarning)
+				walk.MsgBox(mw, "Không đủ dung lượng cho bot", plan.BotDiskWarning, walk.MsgBoxIconWarning)
 			}
-			stageLabel.SetText("Sẵn sàng — card LAN: " + plan.LAN.Interface)
+			refreshLANHint()
+			stageLabel.SetText(lanSummary(plan))
+			// Detection failing is no longer a dead end; the operator types the
+			// address instead. This is the only way a NAT'd hosted server can
+			// work, because there the address clients use is not on the machine.
+			if plan.LAN.Address == "" {
+				walk.MsgBox(mw, "Chưa dò được địa chỉ IPv4", fmt.Sprintf(
+					"%s\r\n\r\nHãy nhập địa chỉ IPv4 mà người chơi dùng để kết nối vào ô \"Địa chỉ IPv4\", rồi bấm CÀI ĐẶT.",
+					plan.LANError), walk.MsgBoxIconWarning)
+				return
+			}
+			if !plan.LAN.Private {
+				// Writing a public address into the client and GameServer
+				// configuration is right on a hosted server and wrong on a home
+				// LAN, so it is never done silently.
+				walk.MsgBox(mw, "Địa chỉ IPv4 công cộng", fmt.Sprintf(
+					"Setup chọn địa chỉ công cộng %s trên card %q và sẽ ghi vào cấu hình Client và GameServer.\r\n\r\n"+
+						"Đúng nếu đây là máy chủ thuê (VPS). Nếu đây là máy trong LAN, hãy sửa lại ô \"Địa chỉ IPv4\" trước khi cài.",
+					plan.LAN.Address, plan.LAN.Interface), walk.MsgBoxIconWarning)
+			}
 		})
 	}()
 	mw.Run()

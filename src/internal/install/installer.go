@@ -22,30 +22,44 @@ import (
 )
 
 type Options struct {
-	SetupPath     string
-	InstallRoot   string
+	SetupPath   string
+	InstallRoot string
+	// LANAddress overrides automatic detection. Leave it empty to detect.
+	//
+	// Detection reads the addresses actually bound to the machine's adapters,
+	// which is everything a LAN server or a directly addressed hosted server
+	// needs. It cannot work behind provider NAT, where the address clients must
+	// use is held by the provider and never appears on the machine, so the
+	// operator has to be able to supply it.
+	LANAddress    string
 	VerifyPackage bool
 	Logf          func(string, ...any)
 }
 
 type Plan struct {
-	ReleaseID       string            `json:"releaseId"`
-	ManifestSHA256  string            `json:"manifestSha256"`
-	SetupPath       string            `json:"setupPath"`
-	MediaPath       string            `json:"mediaPath"`
-	InstallRoot     string            `json:"installRoot"`
-	PayloadFiles    int               `json:"payloadFiles"`
-	PayloadBytes    int64             `json:"payloadBytes"`
-	RequiredBytes   int64             `json:"requiredBytes"`
-	AvailableBytes  uint64            `json:"availableBytes"`
-	TargetVolume    VolumeInfo        `json:"targetVolume"`
-	LAN             network.Candidate `json:"lan"`
-	MySQLVersion    string            `json:"mysqlVersion"`
-	PatchedKeys     int               `json:"patchedKeys"`
-	PatchedBotKeys  int               `json:"patchedBotKeys"`
-	IncludesBot     bool              `json:"includesBot"`
-	Accounts        release.Accounts  `json:"accounts"`
-	PackageVerified bool              `json:"packageVerified"`
+	ReleaseID      string            `json:"releaseId"`
+	ManifestSHA256 string            `json:"manifestSha256"`
+	SetupPath      string            `json:"setupPath"`
+	MediaPath      string            `json:"mediaPath"`
+	InstallRoot    string            `json:"installRoot"`
+	PayloadFiles   int               `json:"payloadFiles"`
+	PayloadBytes   int64             `json:"payloadBytes"`
+	RequiredBytes  int64             `json:"requiredBytes"`
+	AvailableBytes uint64            `json:"availableBytes"`
+	TargetVolume   VolumeInfo        `json:"targetVolume"`
+	LAN            network.Candidate `json:"lan"`
+	// LANOverridden marks an address supplied by the operator rather than
+	// detected.
+	LANOverridden bool `json:"lanOverridden"`
+	// LANError explains why detection found nothing. It is not fatal on its
+	// own: the operator can still supply an address and continue.
+	LANError        string           `json:"lanError,omitempty"`
+	MySQLVersion    string           `json:"mysqlVersion"`
+	PatchedKeys     int              `json:"patchedKeys"`
+	PatchedBotKeys  int              `json:"patchedBotKeys"`
+	IncludesBot     bool             `json:"includesBot"`
+	Accounts        release.Accounts `json:"accounts"`
+	PackageVerified bool             `json:"packageVerified"`
 
 	// SystemDrive is the Windows drive the bot writes its working data to.
 	// It is reported separately because the operator may install the release
@@ -134,9 +148,21 @@ func openPlan(ctx context.Context, options Options) (*Plan, *installMedia, error
 	if err != nil {
 		return nil, media, err
 	}
-	lan, err := network.DetectContext(ctx)
-	if err != nil {
-		return nil, media, err
+	// A blank override means detect. A detection failure is recorded rather
+	// than returned, so the preflight still reports the package and the disk
+	// numbers and the operator can supply an address instead of being stuck.
+	var lan network.Candidate
+	var lanError string
+	overridden := strings.TrimSpace(options.LANAddress) != ""
+	if overridden {
+		lan, err = network.Manual(options.LANAddress)
+		if err != nil {
+			return nil, media, err
+		}
+	} else if detected, detectErr := network.DetectContext(ctx); detectErr != nil {
+		lanError = detectErr.Error()
+	} else {
+		lan = detected
 	}
 	available, err := AvailableBytes(filepath.Dir(installRoot))
 	if err != nil {
@@ -166,7 +192,8 @@ func openPlan(ctx context.Context, options Options) (*Plan, *installMedia, error
 		SetupPath: setupPath, MediaPath: media.sourcePath(), InstallRoot: installRoot, PayloadFiles: len(media.payload.Manifest.Files),
 		PayloadBytes: media.payload.Manifest.PayloadBytes, RequiredBytes: required, AvailableBytes: available,
 		TargetVolume: volume,
-		LAN:          lan, MySQLVersion: media.payload.Manifest.MySQL.Version,
+		LAN:          lan, LANOverridden: overridden, LANError: lanError,
+		MySQLVersion:    media.payload.Manifest.MySQL.Version,
 		PatchedKeys:     len(configpatch.LANRules(lan.Address)),
 		PatchedBotKeys:  len(botEnvRules(media.payload.Manifest, installRoot)),
 		IncludesBot:     media.payload.Manifest.IncludesBot,
@@ -204,6 +231,12 @@ func Run(ctx context.Context, options Options, progress func(percent int, stage,
 	}
 	if err != nil {
 		return nil, err
+	}
+	// Planning tolerates a missing address so the window can still show the
+	// package and offer the field. Installing cannot: every configuration key
+	// depends on it.
+	if strings.TrimSpace(plan.LAN.Address) == "" {
+		return nil, fmt.Errorf("no IPv4 address to write into the configuration; enter one manually (%s)", plan.LANError)
 	}
 	rootWasEmpty := false
 	emptyRootRemoved := false
