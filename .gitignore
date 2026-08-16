@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------------------
+# Rebuilt from source by Build.bat; a 17 MB binary per commit is not worth it.
+/dist/
+# Published by scripts/Build-Tools.ps1 before the Builder embeds it.
+/src/cmd/builder/assets/SetupStub.exe
+
+# Windows resource objects ARE tracked on purpose. They are ~2 KB, the
+# generator writes a zero timestamp so they are reproducible, and without them
+# a plain `go build` produces a GUI that dies on TTM_ADDTOOL because Windows
+# falls back to comctl32 v5. Do not add *.syso here.
+
+# ---------------------------------------------------------------------------
+# Release artifacts
+# ---------------------------------------------------------------------------
+*.iso
+Payload.ktpkg
+Setup.exe
+
+# ---------------------------------------------------------------------------
+# Private build temporaries
+# ---------------------------------------------------------------------------
+# Build-Tools.ps1, the Builder and Setup reclaim these by name after a
+# hard kill, so they must never be committed.
+.Builder-*.exe
+.SetupStub-*.exe
+.BuilderOverlay-*.json
+.publish-backup-*
+.Payload.ktpkg-*.building
+*.building
+*.building.iso
+.iso-build-*
+.mysql-cache-*
+.download
+*.download
+.smoke-*
+.ktpatch-*
+
+# ---------------------------------------------------------------------------
+# Go
+# ---------------------------------------------------------------------------
+*.test
+*.out
+*.prof
+vendor/
+
+# ---------------------------------------------------------------------------
+# Signing material and secrets. Never commit these, even by accident.
+# ---------------------------------------------------------------------------
+*.pfx
+*.p12
+*.pem
+*.key
+*.snk
+license.lic
+*.ktact
+
+# ---------------------------------------------------------------------------
+# Editors and OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+Desktop.ini
+$RECYCLE.BIN/
